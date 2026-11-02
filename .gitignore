@@ -1,0 +1,10 @@
+# Go binaries and test output
+/table
+*.exe
+*.test
+*.out
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
