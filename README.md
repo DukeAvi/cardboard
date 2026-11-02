@@ -1,10 +1,10 @@
 # Cardboard
 
-A small Go library for playing cards and terminal rendering. This is an early prototype.
+A Go library for playing cards (and core mechanics soon) and terminal rendering.
 
 ![Cards rendered in the terminal](cards-preview.png)
 
-## Try it
+## Give it a shot
 
 Requires Go 1.24 or newer and a terminal with truecolor and Unicode support.
 
@@ -13,7 +13,7 @@ go run ./cmd/table
 go run ./cmd/table --gallery
 ```
 
-## Use it
+## Go get it
 
 ```sh
 go get github.com/DukeAvi/cardboard
@@ -34,4 +34,4 @@ func main() {
 }
 ```
 
-The renderer returns strings that can also be used in a TUI. It includes a standard deck, card backs, jokers, and a hand layout.
+The renderer returns strings that can also be used in a Terminal User Interface. It includes a standard deck, card backs, jokers, and a hand layout.

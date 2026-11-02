@@ -9,7 +9,7 @@ const (
 	Clubs
 )
 
-// Rank runs from 1 (ace) through 13 (king).
+// Ace (1) -> Kind (13)
 type Card struct {
 	Rank int
 	Suit Suit
