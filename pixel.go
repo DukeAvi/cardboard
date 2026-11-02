@@ -204,6 +204,9 @@ func label(t tile, x, y int, text string, color int) {
 }
 
 func (r *Renderer) face(c Card) tile {
+	if c.Suit == Joker && (c.Rank == 1 || c.Rank == 2) {
+		return r.joker(c.Rank)
+	}
 	p := newCardCanvas()
 	if c.Rank < 1 || c.Rank > 13 || c.Suit > Clubs {
 		t := pixelsToTile(p)

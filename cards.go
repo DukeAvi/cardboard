@@ -7,9 +7,10 @@ const (
 	Hearts
 	Diamonds
 	Clubs
+	Joker
 )
 
-// Ace (1) -> Kind (13)
+// Rank is 1 (ace) through 13 (king), or 1 and 2 for the two jokers.
 type Card struct {
 	Rank int
 	Suit Suit
@@ -31,7 +32,9 @@ var layouts = map[int][]point{
 	10: {{3, 0}, {13, 0}, {8, 1}, {3, 2}, {13, 2}, {3, 6}, {13, 6}, {8, 7}, {3, 8}, {13, 8}},
 }
 
-func (c Card) Red() bool { return c.Suit == Hearts || c.Suit == Diamonds }
+func (c Card) Red() bool {
+	return c.Suit == Hearts || c.Suit == Diamonds || (c.Suit == Joker && c.Rank == 2)
+}
 
 // Deck returns all 52 cards, ordered by suit and then rank.
 func Deck() []Card {

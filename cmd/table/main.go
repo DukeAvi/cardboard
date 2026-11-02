@@ -1,9 +1,10 @@
-// The table command prints a few static examples of the card art.
+// The table command shows card art and can print a shuffled deal as text.
 package main
 
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 
 	cards "github.com/DukeAvi/cardboard"
@@ -64,11 +65,65 @@ func joinPictures(pictures []string, columns int) string {
 	return strings.Join(rows, "\n\n")
 }
 
+func textCards(hand []cards.Card) string {
+	ranks := []string{"", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+	suits := []string{"S", "H", "D", "C"}
+	var names []string
+	for _, card := range hand {
+		if card.Suit == cards.Joker {
+			names = append(names, fmt.Sprintf("Joker-%d", card.Rank))
+		} else {
+			names = append(names, ranks[card.Rank]+suits[card.Suit])
+		}
+	}
+	return strings.Join(names, " ")
+}
+
+func visualCards(renderer *cards.Renderer, hand []cards.Card) string {
+	var pictures []string
+	for _, card := range hand {
+		pictures = append(pictures, renderer.Card(card))
+	}
+	return joinPictures(pictures, 3)
+}
+
 func main() {
 	showGallery := flag.Bool("gallery", false, "print the complete deck")
 	showSwatch := flag.Bool("swatch", false, "print five sample cards")
 	showBack := flag.Bool("back", false, "print the card back")
+	deal := flag.Bool("deal", false, "deal cards and print plain text")
+	visual := flag.Bool("visual", false, "show card art for -deal")
+	players := flag.Int("players", 2, "number of players for -deal")
+	cardsEach := flag.Int("cards", 13, "cards per player for -deal")
+	jokers := flag.Bool("jokers", false, "include two jokers in -deal")
 	flag.Parse()
+
+	if *deal {
+		pack := cards.NewPack()
+		if *jokers {
+			pack.Jokers()
+		}
+		if err := pack.Deal(*players, *cardsEach); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if *visual {
+			renderer := cards.NewRenderer(cards.Vintage)
+			for i, hand := range pack.Hands {
+				fmt.Printf("Player %d (%d):\n", i+1, len(hand))
+				fmt.Println(visualCards(renderer, hand))
+				fmt.Println()
+			}
+			fmt.Printf("Common (%d):\n", len(pack.Common))
+			fmt.Println(visualCards(renderer, pack.Common))
+			return
+		}
+		for i, hand := range pack.Hands {
+			fmt.Printf("Player %d (%d): %s\n", i+1, len(hand), textCards(hand))
+		}
+		fmt.Printf("Common (%d): %s\n", len(pack.Common), textCards(pack.Common))
+		return
+	}
 
 	renderer := cards.NewRenderer(cards.Vintage)
 
@@ -95,9 +150,5 @@ func main() {
 	}
 
 	fmt.Println("THE DECK")
-	var pictures []string
-	for _, card := range sampleHand() {
-		pictures = append(pictures, renderer.Card(card))
-	}
-	fmt.Println(joinPictures(pictures, 3))
+	fmt.Println(visualCards(renderer, sampleHand()))
 }
