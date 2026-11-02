@@ -1,7 +1,9 @@
 package cards
 
 import (
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -33,7 +35,7 @@ const (
 	light
 )
 
-type pixelCanvas [PixelHeight * 2][PixelWidth]int
+type pixelCanvas [][]int
 type cell struct {
 	char   string
 	fg, bg int
@@ -44,32 +46,43 @@ type tile [][]cell
 // Renderer makes half-block pixel art: each terminal cell holds two pixels.
 // It owns its Lip Gloss renderer and never changes global color settings.
 type Renderer struct {
-	Theme  Theme
-	styles [8][8]lipgloss.Style
+	Theme    Theme
+	CardSize CardSize
+	styles   map[[2]int]lipgloss.Style
+	colors   [8]int
+	terminal *lipgloss.Renderer
 }
 
 func NewRenderer(theme Theme) *Renderer {
-	r := &Renderer{Theme: theme}
+	r := &Renderer{Theme: theme, styles: make(map[[2]int]lipgloss.Style)}
 	l := lipgloss.NewRenderer(io.Discard)
 	l.SetColorProfile(termenv.TrueColor)
+	r.terminal = l
 	colors := []string{theme.Felt, theme.Paper, theme.Edge, theme.Ink, theme.Red, theme.Gold, theme.Skin, theme.Light}
 	for fg := range colors {
+		value, _ := strconv.ParseInt(strings.TrimPrefix(colors[fg], "#"), 16, 32)
+		r.colors[fg] = int(value)
 		for bg := range colors {
-			r.styles[fg][bg] = l.NewStyle().Foreground(lipgloss.Color(colors[fg])).Background(lipgloss.Color(colors[bg]))
+			r.styles[[2]int{fg, bg}] = l.NewStyle().Foreground(lipgloss.Color(colors[fg])).Background(lipgloss.Color(colors[bg]))
 		}
 	}
 	return r
 }
 
 func newCardCanvas() pixelCanvas {
-	var p pixelCanvas
+	return newCanvas(PixelWidth, PixelHeight)
+}
+
+func newCanvas(width, height int) pixelCanvas {
+	p := make(pixelCanvas, height*2)
 	for y := range p {
+		p[y] = make([]int, width)
 		for x := range p[y] {
 			p[y][x] = paper
-			if x == 0 || x == PixelWidth-1 || y == 0 || y == PixelHeight*2-1 {
+			if x == 0 || x == width-1 || y == 0 || y == height*2-1 {
 				p[y][x] = edge
 			}
-			if (x == 0 || x == PixelWidth-1) && (y < 2 || y >= PixelHeight*2-2) {
+			if (x == 0 || x == width-1) && (y < 2 || y >= height*2-2) {
 				p[y][x] = -1
 			}
 		}
@@ -77,7 +90,7 @@ func newCardCanvas() pixelCanvas {
 	return p
 }
 
-func (p *pixelCanvas) box(x, y, w, h, color int) {
+func (p pixelCanvas) box(x, y, w, h, color int) {
 	for dx := 0; dx < w; dx++ {
 		p[y][x+dx], p[y+h-1][x+dx] = color, color
 	}
@@ -116,7 +129,7 @@ var acePixels = [4][]string{
 	},
 }
 
-func (p *pixelCanvas) pip(s Suit, cx, cy, scale, color int, flipped bool) {
+func (p pixelCanvas) pip(s Suit, cx, cy, scale, color int, flipped bool) {
 	for y, row := range suitPixels[s] {
 		for x, mark := range row {
 			if mark != '#' {
@@ -158,7 +171,7 @@ var courts = map[int][]string{
 	},
 }
 
-func (p *pixelCanvas) court(rank, primary, accent int) {
+func (p pixelCanvas) court(rank, primary, accent int) {
 	p.box(4, 4, 18, 32, primary)
 	palette := map[rune]int{'I': primary, 'A': accent, 'G': gold, 'P': skin, 'L': light}
 	for y, row := range courts[rank] {
@@ -171,12 +184,17 @@ func (p *pixelCanvas) court(rank, primary, accent int) {
 	}
 }
 
-func pixelsToTile(p pixelCanvas) tile {
-	t := make(tile, PixelHeight)
+func (r *Renderer) pixelsToTile(p pixelCanvas) tile {
+	width, height := r.CardSize.Dimensions()
+	t := make(tile, height)
 	for y := range t {
-		t[y] = make([]cell, PixelWidth)
+		t[y] = make([]cell, width)
 		for x := range t[y] {
 			a, b := p[y*2][x], p[y*2+1][x]
+			if width != PixelWidth || height != PixelHeight {
+				a = r.sample(p, x, y*2, width, height*2)
+				b = r.sample(p, x, y*2+1, width, height*2)
+			}
 			if a == -1 && b == -1 {
 				t[y][x].clear = true
 				continue
@@ -208,9 +226,10 @@ func (r *Renderer) face(c Card) tile {
 		return r.joker(c.Rank)
 	}
 	p := newCardCanvas()
+	width, height := r.CardSize.Dimensions()
 	if c.Rank < 1 || c.Rank > 13 || c.Suit > Clubs {
-		t := pixelsToTile(p)
-		label(t, 11, 9, "?", red)
+		t := r.pixelsToTile(p)
+		label(t, width/2, height/2, "?", red)
 		return t
 	}
 	primary, accent := ink, red
@@ -241,12 +260,16 @@ func (r *Renderer) face(c Card) tile {
 			p.pip(c.Suit, x, y, 1, primary, spot.y > 4)
 		}
 	}
-	t := pixelsToTile(p)
+	t := r.pixelsToTile(p)
 	suit := []string{"♠", "♥", "♦", "♣"}[c.Suit]
-	label(t, 2, 1, labels[c.Rank], primary)
-	label(t, 2, 2, suit, primary)
-	label(t, PixelWidth-3, PixelHeight-3, suit, primary)
-	label(t, PixelWidth-2-len(labels[c.Rank]), PixelHeight-2, labels[c.Rank], primary)
+	margin := 1
+	if r.CardSize == Large {
+		margin = 2
+	}
+	label(t, margin, 1, labels[c.Rank], primary)
+	label(t, margin, 2, suit, primary)
+	label(t, width-margin-1, height-3, suit, primary)
+	label(t, width-margin-len(labels[c.Rank]), height-2, labels[c.Rank], primary)
 	return t
 }
 
@@ -296,7 +319,7 @@ func (r *Renderer) back() tile {
 			}
 		}
 	}
-	return pixelsToTile(p)
+	return r.pixelsToTile(p)
 }
 
 func abs(n int) int {
@@ -317,11 +340,16 @@ func (r *Renderer) joker(number int) tile {
 		p[4][x], p[35][25-x] = gold, gold
 		p[5][x], p[34][25-x] = accent, accent
 	}
-	t := pixelsToTile(p)
-	label(t, 2, 1, "J", primary)
-	label(t, 2, 2, "★", primary)
-	label(t, 23, 17, "★", primary)
-	label(t, 23, 18, "J", primary)
+	t := r.pixelsToTile(p)
+	width, height := r.CardSize.Dimensions()
+	margin := 1
+	if r.CardSize == Large {
+		margin = 2
+	}
+	label(t, margin, 1, "J", primary)
+	label(t, margin, 2, "★", primary)
+	label(t, width-margin-1, height-3, "★", primary)
+	label(t, width-margin-1, height-2, "J", primary)
 	return t
 }
 
@@ -350,7 +378,7 @@ func (r *Renderer) render(t tile) string {
 				run.WriteString(n.char)
 				end++
 			}
-			out.WriteString(r.styles[c.fg][c.bg].Render(run.String()))
+			out.WriteString(r.style(c.fg, c.bg).Render(run.String()))
 			x = end
 		}
 	}
@@ -361,87 +389,20 @@ func (r *Renderer) Card(c Card) string      { return r.render(r.face(c)) }
 func (r *Renderer) Back() string            { return r.render(r.back()) }
 func (r *Renderer) Joker(number int) string { return r.render(r.joker(number)) }
 
-// Hand lays out an overlapping hand in exactly width cells. selected is raised
-// and drawn last; pass -1 for no selection. Narrow terminals show a focused
-// window of cards, keeping at least three columns of each index visible.
-func (r *Renderer) Hand(hand []Card, selected, width int) string {
-	if width < PixelWidth || len(hand) == 0 {
-		return ""
+func (r *Renderer) style(fg, bg int) lipgloss.Style {
+	key := [2]int{fg, bg}
+	if style, ok := r.styles[key]; ok {
+		return style
 	}
-	if selected < -1 || selected >= len(hand) {
-		selected = -1
-	}
-	maxCards := 1 + (width-PixelWidth)/3
-	if selected >= 0 {
-		// Reserve a complete selected card and a complete final card.
-		// This keeps every remaining card's rank visible beside selection.
-		maxCards = 1
-		if width >= 2*PixelWidth {
-			maxCards = 2 + (width-2*PixelWidth)/3
+	color := func(value int) lipgloss.Color {
+		if value < 8 {
+			value = r.colors[value]
+		} else {
+			value -= 8
 		}
+		return lipgloss.Color(fmt.Sprintf("#%06x", value))
 	}
-	if len(hand) > maxCards {
-		start := 0
-		if selected >= 0 {
-			start = min(max(0, selected-maxCards/2), len(hand)-maxCards)
-		}
-		hand = hand[start : start+maxCards]
-		if selected >= 0 {
-			selected -= start
-		}
-	}
-	step := 8
-	if len(hand) > 1 {
-		step = min(step, (width-PixelWidth)/(len(hand)-1))
-	}
-	expand := selected >= 0 && selected < len(hand)-1
-	if expand && len(hand) > 2 {
-		step = min(step, (width-2*PixelWidth)/(len(hand)-2))
-	}
-	used := PixelWidth + (len(hand)-1)*step
-	if expand {
-		used += PixelWidth - step
-	}
-	left := (width - used) / 2
-	t := make(tile, PixelHeight+5)
-	for y := range t {
-		t[y] = make([]cell, width)
-		for x := range t[y] {
-			t[y][x] = cell{char: " ", fg: felt, bg: felt}
-		}
-	}
-	draw := func(i int) {
-		x := left + i*step
-		if expand && i > selected {
-			x += PixelWidth - step
-		}
-		y := 2 + min(2, abs(2*i-(len(hand)-1))/6)
-		if i == selected {
-			y = 0
-		}
-		card := r.face(hand[i])
-		for dy := 1; dy <= PixelHeight; dy++ {
-			for dx := 1; dx <= PixelWidth; dx++ {
-				if x+dx < width && y+dy < len(t) {
-					t[y+dy][x+dx] = cell{char: " ", fg: ink, bg: ink}
-				}
-			}
-		}
-		for dy, row := range card {
-			for dx, c := range row {
-				if !c.clear {
-					t[y+dy][x+dx] = c
-				}
-			}
-		}
-	}
-	for i := range hand {
-		if i != selected {
-			draw(i)
-		}
-	}
-	if selected >= 0 {
-		draw(selected)
-	}
-	return r.render(t)
+	style := r.terminal.NewStyle().Foreground(color(fg)).Background(color(bg))
+	r.styles[key] = style
+	return style
 }

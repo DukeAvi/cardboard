@@ -43,7 +43,6 @@ func galleryCards(renderer *cards.Renderer) []string {
 }
 
 func joinPictures(pictures []string, columns int) string {
-	gap := strings.Repeat("  \n", cards.PixelHeight-1) + "  "
 	var rows []string
 
 	for start := 0; start < len(pictures); start += columns {
@@ -55,7 +54,7 @@ func joinPictures(pictures []string, columns int) string {
 		var row []string
 		for i := start; i < end; i++ {
 			if len(row) > 0 {
-				row = append(row, gap)
+				row = append(row, "  ")
 			}
 			row = append(row, pictures[i])
 		}
@@ -92,13 +91,13 @@ func main() {
 	showSwatch := flag.Bool("swatch", false, "print five sample cards")
 	showBack := flag.Bool("back", false, "print the card back")
 	deal := flag.Bool("deal", false, "deal cards and print plain text")
-	visual := flag.Bool("visual", false, "show card art for -deal")
+	interactive := flag.Bool("interactive", false, "browse dealt cards interactively")
 	players := flag.Int("players", 2, "number of players for -deal")
 	cardsEach := flag.Int("cards", 13, "cards per player for -deal")
 	jokers := flag.Bool("jokers", false, "include two jokers in -deal")
 	flag.Parse()
 
-	if *deal {
+	if *deal || *interactive {
 		pack := cards.NewPack()
 		if *jokers {
 			pack.Jokers()
@@ -107,15 +106,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if *visual {
-			renderer := cards.NewRenderer(cards.Vintage)
-			for i, hand := range pack.Hands {
-				fmt.Printf("Player %d (%d):\n", i+1, len(hand))
-				fmt.Println(visualCards(renderer, hand))
-				fmt.Println()
+		if *interactive {
+			if err := runInteractive(pack); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
 			}
-			fmt.Printf("Common (%d):\n", len(pack.Common))
-			fmt.Println(visualCards(renderer, pack.Common))
 			return
 		}
 		for i, hand := range pack.Hands {
