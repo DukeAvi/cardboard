@@ -1,4 +1,22 @@
-package cards
+package cardboard
+
+type Layout uint8
+
+const (
+	Overlap Layout = iota
+	Grid
+	Stack
+)
+
+// View describes how a pile should be rendered. Picked is used only when Picking is true.
+type View struct {
+	Width    int
+	Height   int
+	Layout   Layout
+	Selected int
+	Picking  bool
+	Picked   int
+}
 
 func newTile(width, height int) tile {
 	t := make(tile, height)
@@ -21,14 +39,14 @@ func putTile(dst, src tile, x, y int) {
 	}
 }
 
-func frameCard(card tile, selected bool) tile {
+func frameCard(card tile, color int, visible bool) tile {
 	width, height := len(card[0])+2, len(card)+2
 	t := newTile(width, height)
-	if selected {
+	if visible {
 		for y := range t {
 			for x := range t[y] {
 				if x == 0 || y == 0 || x == width-1 || y == height-1 {
-					t[y][x] = cell{char: " ", fg: gold, bg: gold}
+					t[y][x] = cell{char: " ", fg: color, bg: color}
 				}
 			}
 		}
@@ -37,83 +55,132 @@ func frameCard(card tile, selected bool) tile {
 	return t
 }
 
-// HandWindow returns the visible range, keeping the selected card in view.
-func (r *Renderer) HandWindow(count, selected, width int) (int, int) {
-	w, _ := r.CardSize.Dimensions()
-	if count < 1 || width < w {
-		return 0, 0
+// Pile renders a pile according to its face state and the requested layout.
+func (r *Renderer) Pile(pile *Pile, view View) string {
+	if pile == nil || pile.Len() == 0 || view.Width < PixelWidth+2 {
+		return ""
 	}
-	capacity := 1 + (width-w)/4
-	if selected >= 0 && selected < count {
-		if width < w+2 {
-			return 0, 0
+	minimumHeight := PixelHeight + 2
+	if view.Layout == Overlap {
+		minimumHeight = PixelHeight + 4
+	}
+	if view.Height > 0 && view.Height < minimumHeight {
+		return ""
+	}
+	if view.Selected < 0 || view.Selected >= pile.Len() {
+		view.Selected = -1
+	}
+	if !view.Picking || view.Picked < 0 || view.Picked >= pile.Len() {
+		view.Picking = false
+		view.Picked = -1
+	}
+	card := func(index int) tile {
+		if pile.faceDown {
+			return r.back()
 		}
-		capacity = 1
-		// Leave room for the full selection, its frame, and the final card.
-		if width >= 2*w+2 {
-			capacity = 2 + (width-2*w-2)/4
-		}
+		return r.face(pile.cards[index])
 	}
-	capacity = min(capacity, count)
-	start := 0
-	if selected >= 0 && selected < count {
-		start = min(max(0, selected-capacity/2), count-capacity)
+	switch view.Layout {
+	case Grid:
+		return r.grid(pile.Len(), view, card)
+	case Stack:
+		return r.stack(view, card(0))
+	default:
+		return r.overlap(pile.Len(), view, card)
 	}
-	return start, start + capacity
 }
 
-// Hand overlaps cards, exposing four columns of each rank and suit.
-// The selected card is raised, outlined, and shown in full.
-func (r *Renderer) Hand(hand []Card, selected, width int) string {
-	if selected < 0 || selected >= len(hand) {
-		selected = -1
+func highlight(view View, index int) (int, bool) {
+	if view.Picking && index == view.Picked {
+		return red, true
 	}
-	start, end := r.HandWindow(len(hand), selected, width)
+	return gold, index == view.Selected
+}
+
+func visibleWindow(count int, view View) (int, int) {
+	if count < 1 || view.Width < PixelWidth+2 {
+		return 0, 0
+	}
+	frameWidth := PixelWidth + 2
+	capacity := min(1+(view.Width-frameWidth)/4, count)
+	for capacity > 0 {
+		start := 0
+		if view.Selected >= 0 {
+			start = min(max(0, view.Selected-capacity/2), count-capacity)
+		}
+		used := frameWidth + (capacity-1)*4
+		if view.Selected >= start && view.Selected < start+capacity-1 {
+			used += frameWidth - 4
+		}
+		if used <= view.Width {
+			return start, start + capacity
+		}
+		capacity--
+	}
+	return 0, 0
+}
+
+func (r *Renderer) overlap(count int, view View, card func(int) tile) string {
+	start, end := visibleWindow(count, view)
 	if start == end {
 		return ""
 	}
-	hand = hand[start:end]
-	if selected >= 0 {
-		selected -= start
+	shown := end - start
+	selected := view.Selected - start
+	used := PixelWidth + 2 + (shown-1)*4
+	if selected >= 0 && selected < shown-1 {
+		used += PixelWidth - 2
 	}
-	w, h := r.CardSize.Dimensions()
-	used := w + (len(hand)-1)*4
-	if selected >= 0 {
-		used += 2
-		if selected < len(hand)-1 {
-			used += w - 4
-		}
-	}
-	left := (width - used) / 2
-	t := newTile(width, h+4)
-	for i, c := range hand {
+	left := (view.Width - used) / 2
+	t := newTile(view.Width, PixelHeight+4)
+	for i := 0; i < shown; i++ {
 		if i == selected {
 			continue
 		}
 		x := left + i*4
 		if selected >= 0 && i > selected {
-			x += w + 2 - 4
+			x += PixelWidth + 2 - 4
 		}
-		putTile(t, r.face(c), x, 3)
+		color, visible := highlight(view, start+i)
+		putTile(t, frameCard(card(start+i), color, visible), x, 2)
 	}
-	if selected >= 0 {
-		putTile(t, frameCard(r.face(hand[selected]), true), left+selected*4, 0)
+	if selected >= 0 && selected < shown {
+		color, visible := highlight(view, view.Selected)
+		putTile(t, frameCard(card(view.Selected), color, visible), left+selected*4, 0)
 	}
 	return r.render(t)
 }
 
-// Grid shows full cards, using as many columns as fit.
-func (r *Renderer) Grid(hand []Card, selected, width int) string {
-	w, h := r.CardSize.Dimensions()
-	if len(hand) == 0 || width < w+2 {
+func (r *Renderer) grid(count int, view View, card func(int) tile) string {
+	columns := min(count, (view.Width+1)/(PixelWidth+3))
+	if columns < 1 {
 		return ""
 	}
-	columns := min(len(hand), (width+1)/(w+3))
-	rows := (len(hand) + columns - 1) / columns
-	t := newTile(width, rows*(h+3)-1)
-	left := (width - (columns*(w+3) - 1)) / 2
-	for i, c := range hand {
-		putTile(t, frameCard(r.face(c), i == selected), left+(i%columns)*(w+3), (i/columns)*(h+3))
+	rowsAvailable := (count + columns - 1) / columns
+	if view.Height > 0 {
+		rowsAvailable = max(1, min(rowsAvailable, (view.Height+1)/(PixelHeight+3)))
 	}
+	pageSize := columns * rowsAvailable
+	start := 0
+	if view.Selected >= 0 {
+		start = view.Selected / pageSize * pageSize
+	}
+	end := min(start+pageSize, count)
+	rows := (end - start + columns - 1) / columns
+	t := newTile(view.Width, rows*(PixelHeight+3)-1)
+	left := (view.Width - (columns*(PixelWidth+3) - 1)) / 2
+	for index := start; index < end; index++ {
+		position := index - start
+		color, visible := highlight(view, index)
+		putTile(t, frameCard(card(index), color, visible), left+(position%columns)*(PixelWidth+3), (position/columns)*(PixelHeight+3))
+	}
+	return r.render(t)
+}
+
+func (r *Renderer) stack(view View, card tile) string {
+	color, visible := highlight(view, 0)
+	framed := frameCard(card, color, visible)
+	t := newTile(view.Width, len(framed))
+	putTile(t, framed, (view.Width-len(framed[0]))/2, 0)
 	return r.render(t)
 }

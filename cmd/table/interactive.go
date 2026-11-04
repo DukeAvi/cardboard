@@ -5,157 +5,237 @@ import (
 	"os"
 	"strings"
 
-	cards "github.com/DukeAvi/cardboard"
+	"github.com/DukeAvi/cardboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 )
 
-type table struct {
-	pack         *cards.Pack
-	renderer     *cards.Renderer
-	cardSize     cards.CardSize
-	choosingSize bool
-	collapsed    bool
-	group        int
-	selected     []int
-	width        int
-	height       int
+type pileView struct {
+	selected   int
+	picked     int
+	pickedFrom int
+	picking    bool
+	layout     cardboard.Layout
 }
 
-func runInteractive(pack *cards.Pack) error {
+type tableModel struct {
+	table    *cardboard.Table
+	renderer *cardboard.Renderer
+	views    []pileView
+	focused  int
+	width    int
+	height   int
+	message  string
+}
+
+func newTableModel(table *cardboard.Table) *tableModel {
+	views := make([]pileView, table.PlayerCount()+1)
+	for i := range views {
+		views[i].picked = -1
+		views[i].pickedFrom = -1
+		views[i].layout = cardboard.Overlap
+	}
+	views[len(views)-1].layout = cardboard.Stack
+	return &tableModel{
+		table:    table,
+		renderer: cardboard.NewRenderer(cardboard.Vintage),
+		views:    views,
+	}
+}
+
+func runInteractive(table *cardboard.Table) error {
+	if table == nil || table.PlayerCount() == 0 {
+		return fmt.Errorf("interactive mode needs at least one dealt hand")
+	}
 	if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
 		return fmt.Errorf("interactive mode needs a terminal; use --deal for text output")
 	}
-	m := table{
-		pack:         pack,
-		renderer:     cards.NewRenderer(cards.Vintage),
-		cardSize:     cards.Medium,
-		choosingSize: true,
-		collapsed:    true,
-		selected:     make([]int, len(pack.Hands)+1),
-	}
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
+	_, err := tea.NewProgram(newTableModel(table), tea.WithAltScreen(), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout)).Run()
 	return err
 }
 
-func (m table) Init() tea.Cmd {
-	return nil
-}
+func (m *tableModel) Init() tea.Cmd { return nil }
 
-func (m table) hand() []cards.Card {
-	if m.group == len(m.pack.Hands) {
-		return m.pack.Common
+func (m *tableModel) focusedPile() *cardboard.Pile {
+	if m.focused == m.table.PlayerCount() {
+		return m.table.Common()
 	}
-	return m.pack.Hands[m.group]
+	hand, _ := m.table.Hand(m.focused)
+	return hand
 }
 
-func (m table) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+func (m *tableModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	switch message := message.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		m.width, m.height = message.Width, message.Height
 	case tea.KeyMsg:
-		key := msg.String()
+		key := message.String()
 		if key == "q" || key == "ctrl+c" {
 			return m, tea.Quit
 		}
-		if m.choosingSize {
-			switch key {
-			case "1":
-				m.cardSize = cards.Small
-			case "2":
-				m.cardSize = cards.Medium
-			case "3":
-				m.cardSize = cards.Large
-			case "enter":
-			default:
-				return m, nil
-			}
-			m.renderer.CardSize = m.cardSize
-			m.choosingSize = false
-			return m, nil
-		}
+		view := &m.views[m.focused]
+		pile := m.focusedPile()
 		switch key {
+		case "tab":
+			m.focused = (m.focused + 1) % len(m.views)
+			m.message = ""
+		case "shift+tab":
+			m.focused = (m.focused + len(m.views) - 1) % len(m.views)
+			m.message = ""
 		case "left", "h":
-			if m.selected[m.group] > 0 {
-				m.selected[m.group]--
+			if view.layout != cardboard.Stack {
+				m.moveSelection(view, pile, -1)
 			}
 		case "right", "l":
-			if m.selected[m.group] < len(m.hand())-1 {
-				m.selected[m.group]++
+			if view.layout != cardboard.Stack {
+				m.moveSelection(view, pile, 1)
 			}
-		case "tab":
-			m.group = (m.group + 1) % len(m.selected)
-		case "shift+tab":
-			m.group = (m.group + len(m.selected) - 1) % len(m.selected)
+		case "enter", " ":
+			m.pickOrPut(view, pile)
+		case "esc":
+			m.cancelPick(view, pile)
+		case "f":
+			pile.Flip()
+			m.message = "Pile flipped"
 		case "c":
-			m.collapsed = !m.collapsed
-		case "s":
-			m.choosingSize = true
+			if view.layout == cardboard.Grid {
+				if m.focused == m.table.PlayerCount() {
+					view.layout = cardboard.Stack
+				} else {
+					view.layout = cardboard.Overlap
+				}
+			} else {
+				view.layout = cardboard.Grid
+			}
+		case "d":
+			if view.picking {
+				m.message = "Place or cancel the carried card before drawing"
+			} else if m.focused == m.table.PlayerCount() {
+				m.message = "Focus a player before drawing"
+			} else if err := m.table.Draw(m.focused, 1); err != nil {
+				m.message = err.Error()
+			} else {
+				view.selected = pile.Len() - 1
+				m.message = "Drew one card"
+			}
 		}
 	}
 	return m, nil
 }
 
-func (m table) View() string {
-	if m.width == 0 || m.height == 0 {
-		return ""
+func (m *tableModel) moveSelection(view *pileView, pile *cardboard.Pile, change int) {
+	target := view.selected + change
+	if target < 0 || target >= pile.Len() {
+		return
 	}
-	if m.choosingSize {
-		return m.fit(fmt.Sprintf("Choose card size\n\n1  small   12 x 9\n2  medium  18 x 14\n3  large   26 x 20\n\nEnter: %s   q: quit", m.cardSize))
-	}
-
-	hand := m.hand()
-	selected := m.selected[m.group]
-	name := fmt.Sprintf("Player %d", m.group+1)
-	if m.group == len(m.pack.Hands) {
-		name = "Common"
-	}
-	mode := "expanded"
-	if m.collapsed {
-		mode = "collapsed"
-	}
-	header := fmt.Sprintf("%s (%d cards) | Common: %d | %s | %s\n", name, len(hand), len(m.pack.Common), m.cardSize, mode)
-	footer := "left/right: browse  Tab: player/common  c: collapse/expand  s: size  q: quit"
-	if m.width < 70 {
-		footer = "left/right: browse | Tab: group\nc: fold | s: size | q: quit"
-	}
-	if m.width < 30 {
-		footer = "←/→ Tab c s q"
-	}
-	textHeight := 5 + strings.Count(footer, "\n")
-	if len(hand) == 0 {
-		return m.fit(header + "\nNo cards here.\n\n" + footer)
-	}
-
-	w, h := m.cardSize.Dimensions()
-	neededHeight := h + 2
-	if m.collapsed {
-		neededHeight = h + 4
-	}
-	if m.width < w+2 || m.height < neededHeight+textHeight {
-		return m.fit(header + "\nResize the terminal or press s for smaller cards.\n\n" + footer)
-	}
-
-	start, end := 0, len(hand)
-	var body string
-	if m.collapsed {
-		start, end = m.renderer.HandWindow(len(hand), selected, m.width)
-		body = m.renderer.Hand(hand, selected, m.width)
+	if view.picking {
+		if err := pile.Move(view.picked, target); err != nil {
+			m.message = err.Error()
+			return
+		}
+		view.picked = target
+		m.message = "Carrying card; press Space or Enter to place it"
 	} else {
-		columns := (m.width + 1) / (w + 3)
-		rows := (m.height - textHeight + 1) / (h + 3)
-		pageSize := columns * rows
-		start = selected / pageSize * pageSize
-		end = min(start+pageSize, len(hand))
-		body = m.renderer.Grid(hand[start:end], selected-start, m.width)
+		m.message = ""
 	}
-	status := fmt.Sprintf("Card %d/%d: %s | Showing %d-%d | %d before, %d after", selected+1, len(hand), textCards(hand[selected:selected+1]), start+1, end, start, len(hand)-end)
-	return m.fit(header + status + "\n\n" + body + "\n\n" + footer)
+	view.selected = target
 }
 
-func (m table) fit(view string) string {
-	lines := strings.Split(view, "\n")
+func (m *tableModel) pickOrPut(view *pileView, pile *cardboard.Pile) {
+	if pile.Len() == 0 {
+		m.message = "Pile is empty"
+		return
+	}
+	if view.picking {
+		view.picking = false
+		view.picked = -1
+		view.pickedFrom = -1
+		m.message = "Card placed"
+		return
+	}
+	if view.layout == cardboard.Stack && pile.Len() > 1 {
+		m.message = "Switch to grid view before reordering this pile"
+		return
+	}
+	if view.selected < 0 || view.selected >= pile.Len() {
+		view.selected = 0
+	}
+	view.picking = true
+	view.picked = view.selected
+	view.pickedFrom = view.selected
+	m.message = "Card picked; use the arrows to carry it"
+}
+
+func (m *tableModel) cancelPick(view *pileView, pile *cardboard.Pile) {
+	if !view.picking {
+		return
+	}
+	if err := pile.Move(view.picked, view.pickedFrom); err != nil {
+		m.message = err.Error()
+		return
+	}
+	view.selected = view.pickedFrom
+	view.picking = false
+	view.picked = -1
+	view.pickedFrom = -1
+	m.message = "Card returned to its original position"
+}
+
+func (m *tableModel) View() string {
+	if m.width < 1 || m.height < 1 {
+		return ""
+	}
+	pile := m.focusedPile()
+	view := m.views[m.focused]
+	name := fmt.Sprintf("Player %d", m.focused+1)
+	if m.focused == m.table.PlayerCount() {
+		name = "Common"
+	}
+	face := "face up"
+	if pile.FaceDown() {
+		face = "face down"
+	}
+	layout := map[cardboard.Layout]string{cardboard.Overlap: "overlap", cardboard.Grid: "grid", cardboard.Stack: "stack"}[view.layout]
+	header := fmt.Sprintf("%s | %d cards | %s | %s | common: %d", name, pile.Len(), face, layout, m.table.Common().Len())
+	status := m.message
+	if status == "" && pile.Len() > 0 {
+		status = fmt.Sprintf("Card %d/%d", view.selected+1, pile.Len())
+		if !pile.FaceDown() {
+			card, _ := pile.At(view.selected)
+			status += ": " + card.Short()
+		}
+	}
+	footer := "arrows: select/carry  Space/Enter: pick/place  Esc: return  Tab: pile  f: flip  c: layout  d: draw  q: quit"
+	if m.width < ansi.StringWidth(footer) {
+		footer = "arrows select/carry | Space pick/place | Tab pile | f flip\nd draw | Esc return | c layout | q quit"
+	}
+	reserved := 3 + strings.Count(footer, "\n") + 1
+	bodyHeight := cardboard.PixelHeight + 2
+	if view.layout == cardboard.Overlap {
+		bodyHeight += 2
+	}
+	requiredHeight := bodyHeight + reserved
+	if m.width < cardboard.PixelWidth+2 || m.height < requiredHeight {
+		resize := fmt.Sprintf("Resize the terminal to at least 28 columns and %d rows.", requiredHeight)
+		return m.fit(header + "\n" + status + "\n\n" + resize + "\n\n" + footer)
+	}
+	body := "No cards"
+	if pile.Len() > 0 {
+		body = m.renderer.Pile(pile, cardboard.View{
+			Width:    m.width,
+			Height:   m.height - reserved,
+			Layout:   view.layout,
+			Selected: view.selected,
+			Picking:  view.picking,
+			Picked:   view.picked,
+		})
+	}
+	return m.fit(header + "\n" + status + "\n\n" + body + "\n" + footer)
+}
+
+func (m *tableModel) fit(text string) string {
+	lines := strings.Split(text, "\n")
 	lines = lines[:min(len(lines), m.height)]
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, m.width, "")
