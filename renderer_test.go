@@ -31,15 +31,18 @@ func TestCardRenderer(t *testing.T) {
 		}
 		seen[rendered] = true
 	}
-	for _, card := range []Card{{Ace, Joker}, {Two, Joker}, {}} {
+	for _, card := range []Card{{Rank: Ace, Suit: Joker}, {Rank: Two, Suit: Joker}, {}} {
 		assertRenderSize(t, renderer.Card(card), PixelWidth, PixelHeight)
 	}
 	assertRenderSize(t, renderer.Back(), PixelWidth, PixelHeight)
+	if renderer.Card(Card{Rank: Queen, Suit: Hearts, ID: 1}) != renderer.Card(Card{Rank: Queen, Suit: Hearts, ID: 2}) {
+		t.Fatal("physical card IDs should not change the artwork")
+	}
 }
 
 func TestFaceDownPileDoesNotLeakCards(t *testing.T) {
-	one, _ := NewPile(Card{Ace, Spades}, Card{King, Hearts})
-	two, _ := NewPile(Card{Two, Clubs}, Card{Queen, Diamonds})
+	one, _ := NewPile(Card{Rank: Ace, Suit: Spades}, Card{Rank: King, Suit: Hearts})
+	two, _ := NewPile(Card{Rank: Two, Suit: Clubs}, Card{Rank: Queen, Suit: Diamonds})
 	one.SetFaceDown(true)
 	two.SetFaceDown(true)
 	renderer := NewRenderer(Vintage)

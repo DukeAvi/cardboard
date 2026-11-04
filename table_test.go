@@ -1,6 +1,7 @@
 package cardboard
 
 import (
+	"math/rand/v2"
 	"reflect"
 	"testing"
 )
@@ -33,15 +34,154 @@ func TestTableDealAndDraw(t *testing.T) {
 
 func TestDealOrder(t *testing.T) {
 	table := NewTable()
+	deck := table.Common().Cards()
 	if err := table.Deal(2, 3); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := table.Hand(0)
 	second, _ := table.Hand(1)
-	wantFirst := []Card{{Ace, Spades}, {Three, Spades}, {Five, Spades}}
-	wantSecond := []Card{{Two, Spades}, {Four, Spades}, {Six, Spades}}
+	wantFirst := []Card{deck[0], deck[2], deck[4]}
+	wantSecond := []Card{deck[1], deck[3], deck[5]}
 	if !reflect.DeepEqual(first.Cards(), wantFirst) || !reflect.DeepEqual(second.Cards(), wantSecond) {
 		t.Fatalf("cards were not dealt around the table: %v / %v", first.Cards(), second.Cards())
+	}
+}
+
+func TestCustomDeckOwnershipAndValidation(t *testing.T) {
+	for _, deck := range [][]Card{nil, {}, {{Rank: Ace, Suit: Spades}, {}}} {
+		if table, err := NewTableWithDeck(deck); err == nil || table != nil {
+			t.Fatal("empty or invalid deck should be rejected")
+		}
+	}
+	deck := append(StandardDeck(), StandardDeck()...)
+	for i := 0; i < 4; i++ {
+		deck = append(deck, Card{Rank: Ace, Suit: Joker, ID: 999})
+	}
+	table, err := NewTableWithDeck(deck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.TotalCards() != 108 || !table.Common().FaceDown() {
+		t.Fatal("custom deck should be copied into the face-down common pile")
+	}
+	cards := table.Common().Cards()
+	if !cards[0].SameFace(cards[52]) || cards[0].ID == cards[52].ID {
+		t.Fatal("copies of a face need distinct IDs")
+	}
+	seen := make(map[uint64]bool)
+	for _, card := range cards {
+		if card.ID == 0 || seen[card.ID] {
+			t.Fatalf("missing or repeated ID: %d", card.ID)
+		}
+		seen[card.ID] = true
+	}
+	if deck[0].ID != 0 || deck[104].ID != 999 {
+		t.Fatal("constructor changed the supplied deck")
+	}
+	deck[0] = Card{}
+	if got, _ := table.Common().Top(); !got.Valid() {
+		t.Fatal("changing the supplied deck changed table state")
+	}
+	if err := table.AddJokers(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.AddJokers(1); err == nil || table.TotalCards() != 108 {
+		t.Fatal("joker convenience limit should count supplied jokers")
+	}
+}
+
+func TestCardIdentitiesSurvivePileOperations(t *testing.T) {
+	table, err := NewTableWithDeck(append(StandardDeck(), StandardDeck()...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := make(map[uint64]Card)
+	for _, card := range table.Common().Cards() {
+		initial[card.ID] = card
+	}
+	check := func() {
+		t.Helper()
+		seen := make(map[uint64]bool)
+		piles := append(table.Hands(), table.Common())
+		for _, pile := range piles {
+			for _, card := range pile.Cards() {
+				if card.ID == 0 || seen[card.ID] || initial[card.ID] != card {
+					t.Fatalf("card was lost, duplicated or changed: %+v", card)
+				}
+				seen[card.ID] = true
+			}
+		}
+		if len(seen) != len(initial) {
+			t.Fatalf("found %d identities, want %d", len(seen), len(initial))
+		}
+	}
+	if err := table.ShuffleWith(rand.New(rand.NewPCG(1, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Deal(4, 13); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if err := table.Draw(0, 1); err != nil {
+		t.Fatal(err)
+	}
+	one, _ := table.Hand(0)
+	two, _ := table.Hand(1)
+	if err := Transfer(one, 0, two, two.Len()); err != nil {
+		t.Fatal(err)
+	}
+	if err := two.Move(0, two.Len()-1); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	table.Reset()
+	check()
+	if one.Len() != 0 || two.Len() != 0 {
+		t.Fatal("reset left cards in old hand pointers")
+	}
+	if err := Transfer(one, 0, table.Common(), 0); err == nil {
+		t.Fatal("an old hand should not be able to duplicate a collected card")
+	}
+	if err := table.Deal(2, 13); err != nil {
+		t.Fatal(err)
+	}
+	check()
+}
+
+func TestAddedJokersGetNewIdentities(t *testing.T) {
+	table, err := NewTableWithDeck([]Card{{Rank: Two, Suit: Joker}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := table.AddJokers(1); err != nil {
+		t.Fatal(err)
+	}
+	cards := table.Common().Cards()
+	if cards[0].ID == cards[1].ID || cards[1].ID == 0 || cards[1].Rank != Ace {
+		t.Fatal("added joker should have a new ID and the missing face")
+	}
+	standard := NewTable()
+	before := standard.Common().Cards()
+	if err := standard.AddJokers(2); err != nil {
+		t.Fatal(err)
+	}
+	cards = standard.Common().Cards()
+	if cards[52].ID <= before[51].ID || cards[53].ID <= cards[52].ID {
+		t.Fatal("added joker IDs should follow existing IDs")
+	}
+}
+
+func TestJokerFailuresLeaveIdentitiesAlone(t *testing.T) {
+	table := NewTable()
+	before := table.Common().Cards()
+	for _, count := range []int{-1, int(^uint(0) >> 1)} {
+		if err := table.AddJokers(count); err == nil || !reflect.DeepEqual(table.Common().Cards(), before) {
+			t.Fatal("invalid joker count changed the deck")
+		}
+	}
+	table.lastID = ^uint64(0)
+	if err := table.AddJokers(1); err == nil || !reflect.DeepEqual(table.Common().Cards(), before) {
+		t.Fatal("exhausted ID range should fail without changing the deck")
 	}
 }
 

@@ -30,15 +30,24 @@ const (
 	King
 )
 
+// Card describes a face and, when assigned by a Table, one physical card.
+// IDs are unique within one table. Zero means no identity has been assigned.
+// Validation, text formatting, and rendering use only the rank and suit.
 type Card struct {
 	Rank Rank
 	Suit Suit
+	ID   uint64
 }
 
 var rankLabels = [...]string{"", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
 var rankNames = [...]string{"", "Ace", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Jack", "Queen", "King"}
 var suitNames = [...]string{"Spades", "Hearts", "Diamonds", "Clubs"}
 var suitLabels = [...]string{"S", "H", "D", "C"}
+
+// SameFace compares rank and suit without comparing physical card IDs.
+func (c Card) SameFace(other Card) bool {
+	return c.Rank == other.Rank && c.Suit == other.Suit
+}
 
 func (c Card) Valid() bool {
 	if c.Suit == Joker {
@@ -74,7 +83,7 @@ func (c Card) String() string {
 	return rankNames[c.Rank] + " of " + suitNames[c.Suit]
 }
 
-// StandardDeck returns a new ordered deck of 52 cards.
+// StandardDeck returns 52 ordered card faces with unassigned IDs.
 func StandardDeck() []Card {
 	deck := make([]Card, 0, 52)
 	for suit := Spades; suit <= Clubs; suit++ {

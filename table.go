@@ -6,15 +6,41 @@ import (
 )
 
 // Table owns the common pile and all player hands.
+// Create one with NewTable or NewTableWithDeck before use.
 type Table struct {
 	common     *Pile
 	hands      []*Pile
 	jokerCount int
+	lastID     uint64
 }
 
 // NewTable starts with an ordered standard deck in a face-down common pile.
 func NewTable() *Table {
-	return &Table{common: newPile(StandardDeck(), true)}
+	table, _ := NewTableWithDeck(StandardDeck())
+	return table
+}
+
+// NewTableWithDeck copies a nonempty deck into a face-down common pile.
+// Repeated faces and any number of printed jokers are allowed. Supplied IDs
+// are replaced with IDs unique to this table, starting at one.
+func NewTableWithDeck(cards []Card) (*Table, error) {
+	if len(cards) == 0 {
+		return nil, fmt.Errorf("deck must not be empty")
+	}
+	for index, card := range cards {
+		if !card.Valid() {
+			return nil, fmt.Errorf("invalid card at index %d", index)
+		}
+	}
+	table := &Table{common: newPile(cards, true)}
+	for index := range table.common.cards {
+		table.lastID++
+		table.common.cards[index].ID = table.lastID
+		if table.common.cards[index].Suit == Joker {
+			table.jokerCount++
+		}
+	}
+	return table, nil
 }
 
 func (t *Table) Common() *Pile {
@@ -56,7 +82,8 @@ func (t *Table) TotalCards() int {
 	return total
 }
 
-// AddJokers adds up to two distinguishable jokers before cards are dealt.
+// AddJokers is a convenience for decks with at most two printed jokers.
+// Use NewTableWithDeck to supply decks containing more jokers.
 func (t *Table) AddJokers(count int) error {
 	if t == nil {
 		return fmt.Errorf("table must not be nil")
@@ -64,12 +91,31 @@ func (t *Table) AddJokers(count int) error {
 	if len(t.hands) != 0 {
 		return fmt.Errorf("jokers must be added before dealing")
 	}
-	if count < 0 || t.jokerCount+count > 2 {
-		return fmt.Errorf("a table can contain at most two jokers")
+	if count < 0 {
+		return fmt.Errorf("joker count must not be negative")
+	}
+	if count == 0 {
+		return nil
+	}
+	if count > 2 || t.jokerCount > 2-count {
+		return fmt.Errorf("AddJokers supports at most two jokers; supply larger decks with NewTableWithDeck")
+	}
+	if t.lastID > ^uint64(0)-uint64(count) {
+		return fmt.Errorf("no card IDs left")
 	}
 	for i := 0; i < count; i++ {
+		number := 1
+		for _, card := range t.common.cards {
+			if card.Suit == Joker && card.Rank == Ace {
+				number = 2
+				break
+			}
+		}
+		card := jokerCard(number)
+		t.lastID++
+		card.ID = t.lastID
 		t.jokerCount++
-		t.common.cards = append(t.common.cards, jokerCard(t.jokerCount))
+		t.common.cards = append(t.common.cards, card)
 	}
 	return nil
 }
@@ -136,12 +182,14 @@ func (t *Table) Draw(player, count int) error {
 }
 
 // Reset collects every hand into the common pile without shuffling it.
+// Previously returned hand pointers become empty piles.
 func (t *Table) Reset() {
 	if t == nil {
 		return
 	}
 	for _, hand := range t.hands {
 		t.common.cards = append(t.common.cards, hand.cards...)
+		hand.cards = nil
 	}
 	t.hands = nil
 	t.common.faceDown = true
