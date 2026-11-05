@@ -12,11 +12,8 @@ import (
 )
 
 type pileView struct {
-	selected   int
-	picked     int
-	pickedFrom int
-	picking    bool
-	layout     cardboard.Layout
+	selection *cardboard.Selection
+	layout    cardboard.Layout
 }
 
 type tableModel struct {
@@ -32,8 +29,11 @@ type tableModel struct {
 func newTableModel(table *cardboard.Table) *tableModel {
 	views := make([]pileView, table.PlayerCount()+1)
 	for i := range views {
-		views[i].picked = -1
-		views[i].pickedFrom = -1
+		pile := table.Common()
+		if i < table.PlayerCount() {
+			pile, _ = table.Hand(i)
+		}
+		views[i].selection = cardboard.NewSelection(pile)
 		views[i].layout = cardboard.Overlap
 	}
 	views[len(views)-1].layout = cardboard.Stack
@@ -85,16 +85,22 @@ func (m *tableModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = ""
 		case "left", "h":
 			if view.layout != cardboard.Stack {
-				m.moveSelection(view, pile, -1)
+				m.moveSelection(view, -1)
 			}
 		case "right", "l":
 			if view.layout != cardboard.Stack {
-				m.moveSelection(view, pile, 1)
+				m.moveSelection(view, 1)
 			}
 		case "enter", " ":
 			m.pickOrPut(view, pile)
 		case "esc":
-			m.cancelPick(view, pile)
+			if view.selection.Carrying() {
+				if err := view.selection.Cancel(); err != nil {
+					m.message = err.Error()
+				} else {
+					m.message = "Card returned to its original position"
+				}
+			}
 		case "f":
 			pile.Flip()
 			m.message = "Pile flipped"
@@ -109,14 +115,14 @@ func (m *tableModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				view.layout = cardboard.Grid
 			}
 		case "d":
-			if view.picking {
+			if view.selection.Carrying() {
 				m.message = "Place or cancel the carried card before drawing"
 			} else if m.focused == m.table.PlayerCount() {
 				m.message = "Focus a player before drawing"
 			} else if err := m.table.Draw(m.focused, 1); err != nil {
 				m.message = err.Error()
 			} else {
-				view.selected = pile.Len() - 1
+				_ = view.selection.Move(pile.Len())
 				m.message = "Drew one card"
 			}
 		}
@@ -124,22 +130,14 @@ func (m *tableModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tableModel) moveSelection(view *pileView, pile *cardboard.Pile, change int) {
-	target := view.selected + change
-	if target < 0 || target >= pile.Len() {
-		return
-	}
-	if view.picking {
-		if err := pile.Move(view.picked, target); err != nil {
-			m.message = err.Error()
-			return
-		}
-		view.picked = target
+func (m *tableModel) moveSelection(view *pileView, change int) {
+	if err := view.selection.Move(change); err != nil {
+		m.message = err.Error()
+	} else if view.selection.Carrying() {
 		m.message = "Carrying card; press Space or Enter to place it"
 	} else {
 		m.message = ""
 	}
-	view.selected = target
 }
 
 func (m *tableModel) pickOrPut(view *pileView, pile *cardboard.Pile) {
@@ -147,39 +145,23 @@ func (m *tableModel) pickOrPut(view *pileView, pile *cardboard.Pile) {
 		m.message = "Pile is empty"
 		return
 	}
-	if view.picking {
-		view.picking = false
-		view.picked = -1
-		view.pickedFrom = -1
-		m.message = "Card placed"
+	if view.selection.Carrying() {
+		if err := view.selection.Place(); err != nil {
+			m.message = err.Error()
+		} else {
+			m.message = "Card placed"
+		}
 		return
 	}
 	if view.layout == cardboard.Stack && pile.Len() > 1 {
 		m.message = "Switch to grid view before reordering this pile"
 		return
 	}
-	if view.selected < 0 || view.selected >= pile.Len() {
-		view.selected = 0
-	}
-	view.picking = true
-	view.picked = view.selected
-	view.pickedFrom = view.selected
-	m.message = "Card picked; use the arrows to carry it"
-}
-
-func (m *tableModel) cancelPick(view *pileView, pile *cardboard.Pile) {
-	if !view.picking {
-		return
-	}
-	if err := pile.Move(view.picked, view.pickedFrom); err != nil {
+	if err := view.selection.Pick(); err != nil {
 		m.message = err.Error()
-		return
+	} else {
+		m.message = "Card picked; use the arrows to carry it"
 	}
-	view.selected = view.pickedFrom
-	view.picking = false
-	view.picked = -1
-	view.pickedFrom = -1
-	m.message = "Card returned to its original position"
 }
 
 func (m *tableModel) View() string {
@@ -199,10 +181,11 @@ func (m *tableModel) View() string {
 	layout := map[cardboard.Layout]string{cardboard.Overlap: "overlap", cardboard.Grid: "grid", cardboard.Stack: "stack"}[view.layout]
 	header := fmt.Sprintf("%s | %d cards | %s | %s | common: %d", name, pile.Len(), face, layout, m.table.Common().Len())
 	status := m.message
+	selected := view.selection.Selected()
 	if status == "" && pile.Len() > 0 {
-		status = fmt.Sprintf("Card %d/%d", view.selected+1, pile.Len())
+		status = fmt.Sprintf("Card %d/%d", selected+1, pile.Len())
 		if !pile.FaceDown() {
-			card, _ := pile.At(view.selected)
+			card, _ := pile.At(selected)
 			status += ": " + card.Short()
 		}
 	}
@@ -226,9 +209,9 @@ func (m *tableModel) View() string {
 			Width:    m.width,
 			Height:   m.height - reserved,
 			Layout:   view.layout,
-			Selected: view.selected,
-			Picking:  view.picking,
-			Picked:   view.picked,
+			Selected: selected,
+			Picking:  view.selection.Carrying(),
+			Picked:   view.selection.Picked(),
 		})
 	}
 	return m.fit(header + "\n" + status + "\n\n" + body + "\n" + footer)

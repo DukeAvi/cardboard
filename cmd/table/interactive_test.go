@@ -31,14 +31,14 @@ func TestPickAndCarry(t *testing.T) {
 	if got, _ := hand.At(2); got != picked {
 		t.Fatalf("picked card did not follow the second arrow: %v", hand.Cards())
 	}
-	if m.views[0].selected != 2 || m.views[0].picked != 2 {
+	if m.views[0].selection.Selected() != 2 || m.views[0].selection.Picked() != 2 {
 		t.Fatal("selection and picked position should follow the carried card")
 	}
 	m.Update(key(' '))
 	if got, _ := hand.At(2); got != picked {
 		t.Fatalf("picked card moved to %v, want index 2", hand.Cards())
 	}
-	if m.views[0].picking || m.views[0].picked != -1 {
+	if m.views[0].selection.Carrying() || m.views[0].selection.Picked() != -1 {
 		t.Fatal("placing should clear picked state")
 	}
 }
@@ -56,8 +56,42 @@ func TestCancelCarryRestoresOriginalOrder(t *testing.T) {
 	if !reflect.DeepEqual(hand.Cards(), original) {
 		t.Fatalf("cancelled carry changed the hand: got %v, want %v", hand.Cards(), original)
 	}
-	if m.views[0].picking || m.views[0].selected != 0 {
+	if m.views[0].selection.Carrying() || m.views[0].selection.Selected() != 0 {
 		t.Fatal("cancel should clear picked state and restore the original selection")
+	}
+}
+
+func TestDrawWhileCarryingLeavesPilesAlone(t *testing.T) {
+	table := cardboard.NewTable()
+	_ = table.Deal(2, 5)
+	m := newTableModel(table)
+	hand, _ := table.Hand(0)
+	before := hand.Cards()
+	commonCount := table.Common().Len()
+	m.Update(key(' '))
+	m.Update(key('d'))
+	if hand.Len() != len(before) || table.Common().Len() != commonCount || !reflect.DeepEqual(hand.Cards(), before) {
+		t.Fatal("drawing while carrying should leave both piles alone")
+	}
+	if !m.views[0].selection.Carrying() {
+		t.Fatal("blocked draw should leave the card picked")
+	}
+}
+
+func TestDrawingInvalidatesCarryInCommonPile(t *testing.T) {
+	table := cardboard.NewTable()
+	_ = table.Deal(2, 5)
+	m := newTableModel(table)
+	m.focused = table.PlayerCount()
+	m.Update(key('c'))
+	m.Update(key(' '))
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m.Update(key('d'))
+	before := table.Common().Cards()
+	m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.views[m.focused].selection.Carrying() || !reflect.DeepEqual(table.Common().Cards(), before) {
+		t.Fatal("a stale common-pile carry should end without moving another card")
 	}
 }
 
